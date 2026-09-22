@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/goccy/go-yaml"
+	"github.com/yaml/go-yaml"
 )
 
 // visitState is the three-color DFS scheme: visiting-but-not-visited
