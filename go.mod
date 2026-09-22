@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/kaptinlin/jsonschema v0.9.10
-	github.com/yaml/go-yaml v2.1.0+incompatible
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -14,5 +14,4 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
