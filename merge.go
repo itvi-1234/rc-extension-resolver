@@ -84,6 +84,14 @@ func (c *Catalog) schemasFor(kind, interfaceType string) []schemaEntry {
 	return c.schemas[interfaceTypeKey{kind: kind, typ: interfaceType}]
 }
 
+func LoadAndMerge(loader LoaderFunc, rootURI string) (*Catalog, error) {
+	graph, err := NewResolver(loader).Resolve(rootURI)
+	if err != nil {
+		return nil, err
+	}
+	return Merge(graph)
+}
+
 func (c *Catalog) String() string {
 	return fmt.Sprintf("Catalog{kinds=%d, interfaceTypes=%d, schemas=%d}", len(c.kindOwner), len(c.typeOwner), len(c.schemas))
 }
