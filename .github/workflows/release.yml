@@ -1,0 +1,71 @@
+name: Tag release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine bump level from PR labels
+        id: bump
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if [[ ",$LABELS," == *",release:major,"* ]]; then
+            echo "level=major" >> "$GITHUB_OUTPUT"
+          elif [[ ",$LABELS," == *",release:minor,"* ]]; then
+            echo "level=minor" >> "$GITHUB_OUTPUT"
+          elif [[ ",$LABELS," == *",release:patch,"* ]]; then
+            echo "level=patch" >> "$GITHUB_OUTPUT"
+          else
+            echo "level=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next tag
+        if: steps.bump.outputs.level != 'none'
+        id: next
+        env:
+          LEVEL: ${{ steps.bump.outputs.level }}
+        run: |
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          else
+            version="${latest#v}"
+            major="${version%%.*}"
+            rest="${version#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+
+            case "$LEVEL" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+
+            next="v${major}.${minor}.${patch}"
+          fi
+
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and release
+        if: steps.bump.outputs.level != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --generate-notes
