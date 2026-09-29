@@ -193,3 +193,59 @@ spec: {}
 		t.Fatal("expected error for mismatched metadata.id, got nil")
 	}
 }
+
+// A URI whose extension depends on a URI whose extension depends on a URI
+// whose extension depends on a URI, four levels deep, with no dependency
+// declared at each level but the one right below it - the resolver
+// shouldn't need to know the chain's depth up front.
+func TestResolve_FourLevelNestedChain(t *testing.T) {
+	uriD := "mem://d.extension.yaml"
+	docs := map[string][]byte{
+		uriA: []byte(`
+metadata: {id: ` + uriA + `}
+spec:
+  dependencies: [` + uriB + `]
+  kinds: [{name: kindA}]
+`),
+		uriB: []byte(`
+metadata: {id: ` + uriB + `}
+spec:
+  dependencies: [` + uriC + `]
+  kinds: [{name: kindB}]
+`),
+		uriC: []byte(`
+metadata: {id: ` + uriC + `}
+spec:
+  dependencies: [` + uriD + `]
+  kinds: [{name: kindC}]
+`),
+		uriD: []byte(`
+metadata: {id: ` + uriD + `}
+spec:
+  kinds: [{name: kindD}]
+`),
+	}
+
+	g := mustResolve(t, docs, uriA)
+	if len(g.Extensions) != 4 {
+		t.Fatalf("expected 4 extensions, got %d: %v", len(g.Extensions), g.Extensions)
+	}
+
+	order := map[string]int{}
+	for i, ext := range g.Extensions {
+		order[ext.Metadata.ID] = i
+	}
+	if !(order[uriD] < order[uriC] && order[uriC] < order[uriB] && order[uriB] < order[uriA]) {
+		t.Fatalf("expected topological order d,c,b,a; got order %v", order)
+	}
+
+	c, err := Merge(g)
+	if err != nil {
+		t.Fatalf("unexpected merge error: %v", err)
+	}
+	for _, kind := range []string{"kindA", "kindB", "kindC", "kindD"} {
+		if !c.IsValidKind(kind) {
+			t.Errorf("expected kind %q from the resolved chain to be valid", kind)
+		}
+	}
+}
