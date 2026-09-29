@@ -21,10 +21,10 @@ type schemaEntry struct {
 // must satisfy every schema bound to its scope. Conflict is keyed on
 // schema id, not on scope.
 //
-// kind is exempt from ownership: more than one resolved extension may
-// define the same kind name. kindOwners keeps every owner in extension
-// resolution order, so a Condition can disambiguate with an explicit
-// extension field, or fall back to the first owner.
+// kind is exempt from ownership: extension owners should not resolve the
+// same kind name, but it is still possible. kindOwners keeps every owner
+// in extension resolution order, so a Condition can disambiguate with an
+// explicit extension field, or fall back to the first owner.
 type Catalog struct {
 	kindOwners map[string][]string
 	typeOwner  map[interfaceTypeKey]string
