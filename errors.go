@@ -41,3 +41,14 @@ func (e *ConflictError) Error() string {
 	}
 	return fmt.Sprintf("conflict on %q: declared by %s", subject, strings.Join(e.DeclaredBy, ", "))
 }
+
+// ExtensionMismatchError is returned when a Condition names an extension
+// that isn't one of the resolved extensions defining its kind.
+type ExtensionMismatchError struct {
+	Kind      string
+	Extension string
+}
+
+func (e *ExtensionMismatchError) Error() string {
+	return fmt.Sprintf("extension %q does not define kind %q", e.Extension, e.Kind)
+}

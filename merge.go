@@ -20,32 +20,34 @@ type schemaEntry struct {
 // validate interface.configuration instead of interface.spec. A Condition
 // must satisfy every schema bound to its scope. Conflict is keyed on
 // schema id, not on scope.
+//
+// kind is exempt from ownership: extension owners should not resolve the
+// same kind name, but it is still possible. kindOwners keeps every owner
+// in extension resolution order, so a Condition can disambiguate with an
+// explicit extension field, or fall back to the first owner.
 type Catalog struct {
-	kindOwner map[string]string
-	typeOwner map[interfaceTypeKey]string
-	schemaIDs map[string]string
-	schemas   map[interfaceTypeKey][]schemaEntry
-	compiled  map[string]*compiledSchema
-	compileMu sync.Mutex
+	kindOwners map[string][]string
+	typeOwner  map[interfaceTypeKey]string
+	schemaIDs  map[string]string
+	schemas    map[interfaceTypeKey][]schemaEntry
+	compiled   map[string]*compiledSchema
+	compileMu  sync.Mutex
 }
 
 func Merge(graph *ResolvedGraph) (*Catalog, error) {
 	c := &Catalog{
-		kindOwner: make(map[string]string),
-		typeOwner: make(map[interfaceTypeKey]string),
-		schemaIDs: make(map[string]string),
-		schemas:   make(map[interfaceTypeKey][]schemaEntry),
-		compiled:  make(map[string]*compiledSchema),
+		kindOwners: make(map[string][]string),
+		typeOwner:  make(map[interfaceTypeKey]string),
+		schemaIDs:  make(map[string]string),
+		schemas:    make(map[interfaceTypeKey][]schemaEntry),
+		compiled:   make(map[string]*compiledSchema),
 	}
 
 	for _, ext := range graph.Extensions {
 		owner := ext.Metadata.ID
 
 		for _, k := range ext.Spec.Kinds {
-			if existing, ok := c.kindOwner[k.Name]; ok && existing != owner {
-				return nil, &ConflictError{Kind: k.Name, DeclaredBy: []string{existing, owner}}
-			}
-			c.kindOwner[k.Name] = owner
+			c.kindOwners[k.Name] = append(c.kindOwners[k.Name], owner)
 		}
 
 		for _, it := range ext.Spec.InterfaceTypes {
@@ -71,8 +73,30 @@ func Merge(graph *ResolvedGraph) (*Catalog, error) {
 }
 
 func (c *Catalog) IsValidKind(kind string) bool {
-	_, ok := c.kindOwner[kind]
-	return ok
+	return len(c.kindOwners[kind]) > 0
+}
+
+// resolveKind picks which extension's definition of kind a Condition uses.
+// With extension set, it must be one of kind's owners. Without it, the
+// first owner in extension resolution order wins, and match reports
+// whether that pick was explicit or a fallback.
+func (c *Catalog) resolveKind(kind, extension string) (owner string, match KindMatch, err error) {
+	owners := c.kindOwners[kind]
+	if len(owners) == 0 {
+		return "", "", fmt.Errorf("unknown kind %q", kind)
+	}
+	if extension != "" {
+		for _, o := range owners {
+			if o == extension {
+				return o, KindMatchExplicit, nil
+			}
+		}
+		return "", "", &ExtensionMismatchError{Kind: kind, Extension: extension}
+	}
+	if len(owners) > 1 {
+		return owners[0], KindMatchFallback, nil
+	}
+	return owners[0], "", nil
 }
 
 func (c *Catalog) IsValidInterfaceType(kind, interfaceType string) bool {
@@ -93,5 +117,5 @@ func LoadAndMerge(loader LoaderFunc, rootURI string) (*Catalog, error) {
 }
 
 func (c *Catalog) String() string {
-	return fmt.Sprintf("Catalog{kinds=%d, interfaceTypes=%d, schemas=%d}", len(c.kindOwner), len(c.typeOwner), len(c.schemas))
+	return fmt.Sprintf("Catalog{kinds=%d, interfaceTypes=%d, schemas=%d}", len(c.kindOwners), len(c.typeOwner), len(c.schemas))
 }
