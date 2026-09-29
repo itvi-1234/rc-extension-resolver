@@ -36,7 +36,7 @@ spec:
 	}
 }
 
-func TestMerge_ConflictingKindDeclarationFails(t *testing.T) {
+func TestMerge_AmbiguousKindIsAllowed(t *testing.T) {
 	docs := map[string][]byte{
 		uriA: []byte(`
 metadata: {id: ` + uriA + `}
@@ -51,16 +51,12 @@ spec:
 `),
 	}
 	g := mustResolve(t, docs, uriA)
-	_, err := Merge(g)
-	if err == nil {
-		t.Fatal("expected conflict error, got nil")
+	c, err := Merge(g)
+	if err != nil {
+		t.Fatalf("unexpected merge error: %v", err)
 	}
-	var conflictErr *ConflictError
-	if !errors.As(err, &conflictErr) {
-		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
-	}
-	if conflictErr.Kind != "widget" {
-		t.Fatalf("expected conflict on widget, got %q", conflictErr.Kind)
+	if !c.IsValidKind("widget") {
+		t.Fatal("expected widget to be a valid kind")
 	}
 }
 

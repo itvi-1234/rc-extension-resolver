@@ -11,9 +11,24 @@ type compiledSchema struct {
 	schema *jsonschema.Schema
 }
 
+// KindMatch reports how an ambiguous Condition kind was resolved. It's the
+// zero value when the kind had only one owner, since there was nothing to
+// disambiguate.
+type KindMatch string
+
+const (
+	KindMatchExplicit KindMatch = "explicit"
+	KindMatchFallback KindMatch = "fallback"
+)
+
 type ValidationResult struct {
 	Valid  bool
 	Errors []string
+
+	// ResolvedExtension is the extension whose kind definition this
+	// Condition resolved against.
+	ResolvedExtension string
+	KindMatch         KindMatch
 }
 
 func (c *Catalog) ValidateCondition(condition map[string]any) (*ValidationResult, error) {
@@ -21,14 +36,16 @@ func (c *Catalog) ValidateCondition(condition map[string]any) (*ValidationResult
 	if kind == "" {
 		return nil, fmt.Errorf("condition has no kind")
 	}
+	extension, _ := condition["extension"].(string)
 	iface, _ := condition["interface"].(map[string]any)
 	interfaceType, _ := iface["type"].(string)
 	if interfaceType == "" {
 		return nil, fmt.Errorf("condition has no interface.type")
 	}
 
-	if !c.IsValidKind(kind) {
-		return nil, fmt.Errorf("unknown kind %q", kind)
+	owner, match, err := c.resolveKind(kind, extension)
+	if err != nil {
+		return nil, err
 	}
 	if !c.IsValidInterfaceType(kind, interfaceType) {
 		return nil, fmt.Errorf("unknown interface type %q for kind %q", interfaceType, kind)
@@ -54,9 +71,9 @@ func (c *Catalog) ValidateCondition(condition map[string]any) (*ValidationResult
 		}
 	}
 	if len(messages) > 0 {
-		return &ValidationResult{Valid: false, Errors: messages}, nil
+		return &ValidationResult{Valid: false, Errors: messages, ResolvedExtension: owner, KindMatch: match}, nil
 	}
-	return &ValidationResult{Valid: true}, nil
+	return &ValidationResult{Valid: true, ResolvedExtension: owner, KindMatch: match}, nil
 }
 
 func (c *Catalog) compile(entry schemaEntry) (*jsonschema.Schema, error) {
