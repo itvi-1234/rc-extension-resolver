@@ -212,3 +212,33 @@ func TestValidateCondition_UnambiguousKindHasNoMatchType(t *testing.T) {
 		t.Fatalf("expected no match type for an unambiguous kind, got %q", result.KindMatch)
 	}
 }
+
+func TestValidateCondition_UnresolvedSchemaRefIsError(t *testing.T) {
+	docs := map[string][]byte{
+		uriA: []byte(`
+metadata: {id: ` + uriA + `}
+spec:
+  kinds: [{name: widget}]
+  interfaceTypes: [{name: http, targetKind: widget}]
+  schemas:
+    - id: widget-http-broken
+      appliesToKind: widget
+      appliesToInterfaceType: http
+      schema:
+        $schema: https://json-schema.org/draft/2020-12/schema
+        $ref: '#/$defs/nope'
+`),
+	}
+	g := mustResolve(t, docs, uriA)
+	c, err := Merge(g)
+	if err != nil {
+		t.Fatalf("unexpected merge error: %v", err)
+	}
+	_, err = c.ValidateCondition(map[string]any{
+		"kind":      "widget",
+		"interface": map[string]any{"type": "http"},
+	})
+	if err == nil {
+		t.Fatal("expected error: schema has a $ref that never resolves")
+	}
+}
