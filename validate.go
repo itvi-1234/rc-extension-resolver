@@ -94,6 +94,13 @@ func (c *Catalog) compile(entry schemaEntry) (*jsonschema.Schema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compiling schema %q (from %s): %w", entry.def.ID, entry.ownerURI, err)
 	}
+	// jsonschema doesn't error on a $ref that never resolves - it just
+	// treats the assertion as satisfied. Check for that ourselves so a
+	// broken schema fails compilation instead of silently validating
+	// everything.
+	if unresolved := schema.UnresolvedReferenceURIs(); len(unresolved) > 0 {
+		return nil, fmt.Errorf("compiling schema %q (from %s): unresolved references: %v", entry.def.ID, entry.ownerURI, unresolved)
+	}
 
 	c.compiled[entry.def.ID] = &compiledSchema{schema: schema}
 	return schema, nil
