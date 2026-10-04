@@ -249,3 +249,141 @@ spec:
 		}
 	}
 }
+
+func TestResolve_ShorthandURIAppendsStandardFilename(t *testing.T) {
+	const fullURI = "mem://a/" + standardExtensionFilename
+	docs := map[string][]byte{
+		fullURI: []byte(`
+apiVersion: runtimeconditions.io/v1alpha1
+kind: RuntimeConditionsExtensionDefinition
+metadata:
+  id: ` + fullURI + `
+spec:
+  kinds:
+    - name: widget
+`),
+	}
+
+	g := mustResolve(t, docs, "mem://a/")
+	if len(g.Extensions) != 1 {
+		t.Fatalf("expected 1 extension, got %d", len(g.Extensions))
+	}
+	if g.ByID[fullURI] == nil {
+		t.Fatalf("expected extension resolved and keyed under the full URI %s", fullURI)
+	}
+}
+
+func TestResolve_ShorthandDependencyAppendsStandardFilename(t *testing.T) {
+	const rootURI = "mem://root/" + standardExtensionFilename
+	const depFullURI = "mem://dep/" + standardExtensionFilename
+	docs := map[string][]byte{
+		rootURI: []byte(`
+apiVersion: runtimeconditions.io/v1alpha1
+kind: RuntimeConditionsExtensionDefinition
+metadata:
+  id: ` + rootURI + `
+spec:
+  dependencies:
+    - mem://dep/
+  kinds:
+    - name: root-kind
+`),
+		depFullURI: []byte(`
+apiVersion: runtimeconditions.io/v1alpha1
+kind: RuntimeConditionsExtensionDefinition
+metadata:
+  id: ` + depFullURI + `
+spec:
+  kinds:
+    - name: dep-kind
+`),
+	}
+
+	g := mustResolve(t, docs, rootURI)
+	if len(g.Extensions) != 2 {
+		t.Fatalf("expected 2 extensions, got %d", len(g.Extensions))
+	}
+	if g.ByID[depFullURI] == nil {
+		t.Fatalf("expected dependency resolved and keyed under the full URI %s", depFullURI)
+	}
+}
+
+func TestResolve_NonStandardFilenameURIIsLeftAlone(t *testing.T) {
+	// A complete identifier that doesn't use the standard filename (and
+	// doesn't end in "/") is not shorthand - it's used exactly as given.
+	g := mustResolve(t, map[string][]byte{
+		uriA: []byte(`
+metadata: {id: ` + uriA + `}
+spec:
+  kinds: [{name: widget}]
+`),
+	}, uriA)
+	if g.ByID[uriA] == nil {
+		t.Fatalf("expected extension resolved and keyed under the original URI %s", uriA)
+	}
+}
+
+func TestResolve_ColonVersionAppendsStandardFilename(t *testing.T) {
+	const fullURI = "https://example.test/extensions/aws-s3/0.1.0/" + standardExtensionFilename
+	docs := map[string][]byte{
+		fullURI: []byte(`
+apiVersion: runtimeconditions.io/v1alpha1
+kind: RuntimeConditionsExtensionDefinition
+metadata:
+  id: ` + fullURI + `
+spec:
+  kinds:
+    - name: widget
+`),
+	}
+
+	g := mustResolve(t, docs, "https://example.test/extensions/aws-s3:0.1.0")
+	if len(g.Extensions) != 1 {
+		t.Fatalf("expected 1 extension, got %d", len(g.Extensions))
+	}
+	if g.ByID[fullURI] == nil {
+		t.Fatalf("expected extension resolved and keyed under the full URI %s", fullURI)
+	}
+}
+
+func TestResolve_ColonVersionNonSemverVersionWorks(t *testing.T) {
+	// The version segment is an arbitrary string, not constrained to
+	// semver - v1alpha1 must resolve the same way 0.1.0 does.
+	const fullURI = "https://example.test/extensions/common-integrations/v1alpha1/" + standardExtensionFilename
+	docs := map[string][]byte{
+		fullURI: []byte(`
+apiVersion: runtimeconditions.io/v1alpha1
+kind: RuntimeConditionsExtensionDefinition
+metadata:
+  id: ` + fullURI + `
+spec:
+  kinds:
+    - name: api
+`),
+	}
+
+	g := mustResolve(t, docs, "https://example.test/extensions/common-integrations:v1alpha1")
+	if g.ByID[fullURI] == nil {
+		t.Fatalf("expected extension resolved and keyed under the full URI %s", fullURI)
+	}
+}
+
+func TestResolve_DefaultNamespacePrefixResolvesSameAsUnprefixed(t *testing.T) {
+	const fullURI = "https://example.test/extensions/common-integrations/v1alpha1/" + standardExtensionFilename
+	docs := map[string][]byte{
+		fullURI: []byte(`
+apiVersion: runtimeconditions.io/v1alpha1
+kind: RuntimeConditionsExtensionDefinition
+metadata:
+  id: ` + fullURI + `
+spec:
+  kinds:
+    - name: api
+`),
+	}
+
+	g := mustResolve(t, docs, "https://example.test/extensions/rc/common-integrations:v1alpha1")
+	if g.ByID[fullURI] == nil {
+		t.Fatalf("expected the rc/-prefixed id to resolve and key under the unprefixed full URI %s", fullURI)
+	}
+}

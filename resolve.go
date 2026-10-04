@@ -3,9 +3,43 @@ package resolver
 import (
 	"fmt"
 	"io"
+	"net/url"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+const standardExtensionFilename = "runtimeconditions.extension.yaml"
+
+// defaultCatalogNamespaceMarker is RC's default namespace, the same way
+// Docker treats "library/" as implicit for official images - "rc/nats" and
+// "nats" resolve to the same place.
+const defaultCatalogNamespaceMarker = "/extensions/rc/"
+
+func normalizeExtensionURI(uri string) string {
+	if idx := strings.LastIndex(uri, ":"); idx > 0 {
+		base, version := uri[:idx], uri[idx+1:]
+		if version != "" && isAbsoluteHTTPURI(base) {
+			return stripDefaultNamespace(strings.TrimSuffix(base, "/")) + "/" + version + "/" + standardExtensionFilename
+		}
+	}
+	if strings.HasSuffix(uri, "/") {
+		return stripDefaultNamespace(strings.TrimSuffix(uri, "/")) + "/" + standardExtensionFilename
+	}
+	return uri
+}
+
+func isAbsoluteHTTPURI(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+func stripDefaultNamespace(uri string) string {
+	if idx := strings.Index(uri, defaultCatalogNamespaceMarker); idx != -1 {
+		return uri[:idx] + "/extensions/" + uri[idx+len(defaultCatalogNamespaceMarker):]
+	}
+	return uri
+}
 
 // visitState is the three-color DFS scheme: visiting-but-not-visited
 // means we've looped back to an ancestor, i.e. a cycle.
@@ -38,6 +72,7 @@ func (r *Resolver) Resolve(rootURI string) (*ResolvedGraph, error) {
 
 	var visit func(uri string, path []string) error
 	visit = func(uri string, path []string) error {
+		uri = normalizeExtensionURI(uri)
 		switch state[uri] {
 		case visiting:
 			return &CycleError{Path: append(append([]string{}, path...), uri)}
