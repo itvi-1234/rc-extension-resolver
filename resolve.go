@@ -11,9 +11,6 @@ import (
 
 const standardExtensionFilename = "runtimeconditions.extension.yaml"
 
-// defaultCatalogNamespaceMarker is RC's default namespace, the same way
-// Docker treats "library/" as implicit for official images - "rc/nats" and
-// "nats" resolve to the same place.
 const defaultCatalogNamespaceMarker = "/extensions/rc/"
 
 func normalizeExtensionURI(uri string) string {
