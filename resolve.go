@@ -3,40 +3,9 @@ package resolver
 import (
 	"fmt"
 	"io"
-	"net/url"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
-
-const standardExtensionFilename = "runtimeconditions.extension.yaml"
-
-const defaultCatalogNamespaceMarker = "/extensions/rc/"
-
-func normalizeExtensionURI(uri string) string {
-	if idx := strings.LastIndex(uri, ":"); idx > 0 {
-		base, version := uri[:idx], uri[idx+1:]
-		if version != "" && isAbsoluteHTTPURI(base) {
-			return stripDefaultNamespace(strings.TrimSuffix(base, "/")) + "/" + version + "/" + standardExtensionFilename
-		}
-	}
-	if strings.HasSuffix(uri, "/") {
-		return stripDefaultNamespace(strings.TrimSuffix(uri, "/")) + "/" + standardExtensionFilename
-	}
-	return uri
-}
-
-func isAbsoluteHTTPURI(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
-}
-
-func stripDefaultNamespace(uri string) string {
-	if idx := strings.Index(uri, defaultCatalogNamespaceMarker); idx != -1 {
-		return uri[:idx] + "/extensions/" + uri[idx+len(defaultCatalogNamespaceMarker):]
-	}
-	return uri
-}
 
 // visitState is the three-color DFS scheme: visiting-but-not-visited
 // means we've looped back to an ancestor, i.e. a cycle.
@@ -50,6 +19,10 @@ const (
 
 type Resolver struct {
 	Loader LoaderFunc
+
+	// Locations maps exact extension identifiers to retrieval locations. An
+	// identifier without a mapping is passed directly to Loader.
+	Locations map[string]string
 }
 
 func NewResolver(loader LoaderFunc) *Resolver {
@@ -57,49 +30,60 @@ func NewResolver(loader LoaderFunc) *Resolver {
 }
 
 // ResolvedGraph is every extension reachable from a root, deduplicated by
-// identifier URI, in dependency-first order.
+// exact extension identifier, in dependency-first order.
 type ResolvedGraph struct {
 	Extensions []*ExtensionDefinition
 	ByID       map[string]*ExtensionDefinition
 }
 
-func (r *Resolver) Resolve(rootURI string) (*ResolvedGraph, error) {
+// Resolve preserves exact identifiers; Locations controls where definitions
+// are retrieved. Every definition must declare the requested metadata.id.
+func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 	g := &ResolvedGraph{ByID: make(map[string]*ExtensionDefinition)}
 	state := make(map[string]visitState)
 
-	var visit func(uri string, path []string) error
-	visit = func(uri string, path []string) error {
-		uri = normalizeExtensionURI(uri)
-		switch state[uri] {
+	var visit func(id string, path []string) error
+	visit = func(id string, path []string) error {
+		if id == "" {
+			return fmt.Errorf("extension identifier must not be empty")
+		}
+		switch state[id] {
 		case visiting:
-			return &CycleError{Path: append(append([]string{}, path...), uri)}
+			return &CycleError{Path: append(append([]string{}, path...), id)}
 		case visited:
 			return nil
 		}
-		state[uri] = visiting
+		state[id] = visiting
 
-		ext, err := r.fetch(uri)
+		location, mapped := r.Locations[id]
+		if !mapped {
+			location = id
+		}
+		if location == "" {
+			return fmt.Errorf("extension %q has an empty retrieval location", id)
+		}
+		ext, err := r.fetch(location)
 		if err != nil {
 			return err
 		}
-		if ext.Metadata.ID != "" && ext.Metadata.ID != uri {
-			return fmt.Errorf("fetch %s: document declares metadata.id %q, expected %q", uri, ext.Metadata.ID, uri)
+		if ext.Metadata.ID != id {
+			return fmt.Errorf("fetch %s: document declares metadata.id %q, expected %q", location, ext.Metadata.ID, id)
 		}
 
-		nextPath := append(append([]string{}, path...), uri)
+		nextPath := append(append([]string{}, path...), id)
 		for _, dep := range ext.Spec.Dependencies {
 			if err := visit(dep, nextPath); err != nil {
 				return err
 			}
 		}
 
-		state[uri] = visited
-		g.ByID[uri] = ext
+		state[id] = visited
+		g.ByID[id] = ext
 		g.Extensions = append(g.Extensions, ext)
 		return nil
 	}
 
-	if err := visit(rootURI, nil); err != nil {
+	if err := visit(rootID, nil); err != nil {
 		return nil, err
 	}
 	return g, nil
