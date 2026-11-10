@@ -28,10 +28,21 @@ map all work the same way.
 
 ## Usage
 
+`LoadAndMerge(loader, rootID, locations)` requires an explicit retrieval mapping
+for the root and every dependency. Keys are complete `<location>:<version>`
+extension IDs; values are artifact locations passed to the loader. Retrieved
+definitions must declare the requested ID exactly. Missing mappings fail.
+
+Example mappings for the canonical common/env releases:
+
 ```go
 loader := resolver.NewHTTPLoader(10 * time.Second)
+locations := map[string]string{
+    "https://runtimeconditions.io/extensions/common-integrations:v1alpha1": "https://runtimeconditions.io/extensions/common-integrations/releases/v1alpha1/runtimeconditions.extension.yaml",
+    "https://runtimeconditions.io/extensions/env-configuration:v1alpha1": "https://runtimeconditions.io/extensions/env-configuration/releases/v1alpha1/runtimeconditions.extension.yaml",
+}
 
-catalog, err := resolver.LoadAndMerge(loader, profile.Extensions[0])
+catalog, err := resolver.LoadAndMerge(loader, profile.Extensions[0], locations)
 if err != nil {
     // resolution or merge failed
 }

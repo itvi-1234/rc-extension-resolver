@@ -17,40 +17,46 @@ func extensionsRepoRoot(t *testing.T) string {
 	return filepath.Join("..", "extensions")
 }
 
-// fileLoaderFor maps published identifier URIs to their file on disk in a
-// checkout of the extensions repo, per the table in that repo's README.
-// This is the resolver's real fetch path with the network swapped for a
-// local checkout - no fake documents, no mocked schema shapes.
-func fileLoaderFor(t *testing.T, root string) LoaderFunc {
+// catalogResolverFor maps canonical references to files in the real extensions
+// checkout. Definition bytes are loaded unchanged, so unmigrated identities fail.
+func catalogResolverFor(t *testing.T, root string) *Resolver {
 	t.Helper()
-	uriToPath := map[string]string{
-		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/aws-s3/0.1.0/runtimeconditions.extension.yaml":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
+	idToPath := map[string]string{
+		"https://runtimeconditions.io/extensions/common-integrations:v1alpha1": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
+		"https://runtimeconditions.io/extensions/env-configuration:v1alpha1":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
+		"https://runtimeconditions.io/extensions/aws/s3:0.1.0":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
 	}
 	docs := make(map[string][]byte)
-	for uri, relPath := range uriToPath {
-		data, err := os.ReadFile(filepath.Join(root, relPath))
+	locations := make(map[string]string)
+	for id, relPath := range idToPath {
+		path := filepath.Join(root, relPath)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Skipf("extensions repo not available at %s (%v); skipping integration test", root, err)
 		}
-		docs[uri] = data
+		docs[path] = data
+		locations[id] = path
 	}
-	return NewInMemoryLoader(docs)
+	resolver := NewResolver(NewInMemoryLoader(docs))
+	resolver.Locations = locations
+	return resolver
 }
 
 func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 	root := extensionsRepoRoot(t)
-	loader := fileLoaderFor(t, root)
-
-	r := NewResolver(loader)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml")
+	r := catalogResolverFor(t, root)
+	g, err := r.Resolve("https://runtimeconditions.io/extensions/env-configuration:v1alpha1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	// env-configuration depends on common-integrations, so both should be present.
 	if len(g.Extensions) != 2 {
 		t.Fatalf("expected 2 extensions (env-configuration + common-integrations), got %d", len(g.Extensions))
+	}
+	for _, id := range []string{"https://runtimeconditions.io/extensions/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations:v1alpha1"} {
+		if g.ByID[id] == nil {
+			t.Fatalf("canonical identity %q missing from graph", id)
+		}
 	}
 
 	c, err := Merge(g)
@@ -86,10 +92,8 @@ func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 
 func TestIntegration_ResolveIndependentExtensionNoConflict(t *testing.T) {
 	root := extensionsRepoRoot(t)
-	loader := fileLoaderFor(t, root)
-
-	r := NewResolver(loader)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/aws-s3/0.1.0/runtimeconditions.extension.yaml")
+	r := catalogResolverFor(t, root)
+	g, err := r.Resolve("https://runtimeconditions.io/extensions/aws/s3:0.1.0")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

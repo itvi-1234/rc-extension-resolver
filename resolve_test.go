@@ -2,21 +2,27 @@ package resolver
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 const (
 	standardExtensionFilename = "runtimeconditions.extension.yaml"
-	uriA                      = "mem://a.extension.yaml"
-	uriB                      = "mem://b.extension.yaml"
-	uriC                      = "mem://c.extension.yaml"
+	uriA                      = "https://example.test/extensions/a:1"
+	uriB                      = "https://example.test/extensions/b:1"
+	uriC                      = "https://example.test/extensions/c:1"
 )
 
 func mustResolve(t *testing.T, docs map[string][]byte, root string) *ResolvedGraph {
 	t.Helper()
-	return mustResolveLocations(t, docs, nil, root)
+	locations := make(map[string]string, len(docs))
+	for id := range docs {
+		locations[id] = id
+	}
+	return mustResolveLocations(t, docs, locations, root)
 }
 
 func mustResolveLocations(t *testing.T, docs map[string][]byte, locations map[string]string, root string) *ResolvedGraph {
@@ -90,7 +96,7 @@ spec:
 
 func TestResolve_DiamondDependencyFetchedOnce(t *testing.T) {
 	// a depends on b and c, both of which depend on d.
-	uriD := "mem://d.extension.yaml"
+	uriD := "https://example.test/extensions/d:1"
 	docs := map[string][]byte{
 		uriA: []byte(`
 metadata: {id: ` + uriA + `}
@@ -133,6 +139,7 @@ spec:
 		// uriB deliberately missing.
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
+	r.Locations = map[string]string{uriA: uriA, uriB: uriB}
 	_, err := r.Resolve(uriA)
 	if err == nil {
 		t.Fatal("expected error for broken reference, got nil")
@@ -163,6 +170,7 @@ spec:
 `),
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
+	r.Locations = map[string]string{uriA: uriA, uriB: uriB}
 	_, err := r.Resolve(uriA)
 	if err == nil {
 		t.Fatal("expected cycle error, got nil")
@@ -182,6 +190,7 @@ spec:
 `),
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
+	r.Locations = map[string]string{uriA: uriA}
 	_, err := r.Resolve(uriA)
 	var cycleErr *CycleError
 	if !errors.As(err, &cycleErr) {
@@ -197,6 +206,7 @@ spec: {}
 `),
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
+	r.Locations = map[string]string{uriA: uriA}
 	_, err := r.Resolve(uriA)
 	if err == nil {
 		t.Fatal("expected error for mismatched metadata.id, got nil")
@@ -208,7 +218,7 @@ spec: {}
 // declared at each level but the one right below it - the resolver
 // shouldn't need to know the chain's depth up front.
 func TestResolve_FourLevelNestedChain(t *testing.T) {
-	uriD := "mem://d.extension.yaml"
+	uriD := "https://example.test/extensions/d:1"
 	docs := map[string][]byte{
 		uriA: []byte(`
 metadata: {id: ` + uriA + `}
@@ -260,7 +270,7 @@ spec:
 }
 
 func TestResolve_MappedIdentifierPreservesIdentity(t *testing.T) {
-	const id = "mem://a/"
+	const id = uriA
 	const fullURI = "mem://a/" + standardExtensionFilename
 	docs := map[string][]byte{
 		fullURI: []byte(`
@@ -284,8 +294,8 @@ spec:
 }
 
 func TestResolve_MappedDependencyPreservesIdentity(t *testing.T) {
-	const rootURI = "mem://root/" + standardExtensionFilename
-	const depID = "mem://dep/"
+	const rootURI = "https://example.test/extensions/root:1"
+	const depID = "https://example.test/extensions/dependency:1"
 	const depFullURI = "mem://dep/" + standardExtensionFilename
 	docs := map[string][]byte{
 		rootURI: []byte(`
@@ -295,7 +305,7 @@ metadata:
   id: ` + rootURI + `
 spec:
   dependencies:
-    - mem://dep/
+    - ` + depID + `
   kinds:
     - name: root-kind
 `),
@@ -310,7 +320,7 @@ spec:
 `),
 	}
 
-	g := mustResolveLocations(t, docs, map[string]string{depID: depFullURI}, rootURI)
+	g := mustResolveLocations(t, docs, map[string]string{rootURI: rootURI, depID: depFullURI}, rootURI)
 	if len(g.Extensions) != 2 {
 		t.Fatalf("expected 2 extensions, got %d", len(g.Extensions))
 	}
@@ -319,9 +329,7 @@ spec:
 	}
 }
 
-func TestResolve_NonStandardFilenameURIIsLeftAlone(t *testing.T) {
-	// A complete identifier that doesn't use the standard filename (and
-	// doesn't end in "/") is not shorthand - it's used exactly as given.
+func TestResolve_ExplicitMappingKeepsReference(t *testing.T) {
 	g := mustResolve(t, map[string][]byte{
 		uriA: []byte(`
 metadata: {id: ` + uriA + `}
@@ -412,8 +420,8 @@ spec:
 	}
 }
 
-func TestResolve_UnmappedIdentifiersAreLoadedVerbatim(t *testing.T) {
-	for _, id := range []string{"https://runtimeconditions.io/extensions/common-integrations:v1alpha1", "https://example.test:8443/extension.yaml", "example.opaque:1", "mem://extension/", "https://example.test/extensions/rc/common:v1"} {
+func TestResolve_VersionedIdentifiersKeepExactSpelling(t *testing.T) {
+	for _, id := range []string{"https://runtimeconditions.io/extensions/common-integrations:v1alpha1", "https://EXAMPLE.test:8443/CaseSensitive/%73ervice:V1+build", "https://example.test/service:sha256:abc", "urn:service:1.0.0", "custom+resolver:service:1.0.0", "file:///opt/extensions/service:1.0.0", "oci://example.test/extensions:1.0.0"} {
 		t.Run(id, func(t *testing.T) {
 			g := mustResolve(t, map[string][]byte{id: []byte("metadata: {id: " + id + "}\n")}, id)
 			if g.ByID[id] == nil {
@@ -491,5 +499,107 @@ func TestResolve_MappingFailures(t *testing.T) {
 	r.Locations[id] = ""
 	if _, err := r.Resolve(id); err == nil {
 		t.Fatal("accepted an empty retrieval mapping")
+	}
+	delete(r.Locations, id)
+	if _, err := r.Resolve(id); err == nil || !strings.Contains(err.Error(), "no retrieval mapping") {
+		t.Fatalf("expected a missing retrieval mapping error, got %v", err)
+	}
+}
+
+func TestResolve_RejectsUnsupportedReferencesBeforeLoading(t *testing.T) {
+	for _, id := range []string{
+		"", "relative/path:1", "/absolute/path:1", "//example.test/path:1", "1bad:service:1",
+		"https://example.test/service", "https://example.test:8443", "urn:release-a", "custom+resolver:release-a",
+		"https://example.test/service:", "https://example.test/:1", "https://example.test/service:.", "https://example.test/service:..",
+		"https:///service:1", "https://user@example.test/service:1", "https://example.test/%invalid:1",
+		"https://example.test/service:bad version", "https://example.test/service:bad\u0085version", "https://example.test/service:bad\\version",
+		"https://example.test/service:1?revision=abc", "https://example.test/service:1#fragment",
+		"file:///opt/extensions/release.yaml", "oci://example.test/extensions",
+		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml",
+		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml:v1alpha1",
+		"https://example.test/definition.yml:1", "https://example.test/definition.json:1", "https://example.test/definition%2Eyaml:1",
+	} {
+		for _, test := range []struct {
+			name, root string
+			loads      int
+		}{{"root", id, 0}, {"dependency", uriA, 1}} {
+			t.Run(test.name+"/"+id, func(t *testing.T) {
+				loads := 0
+				r := NewResolver(func(location string) (io.ReadCloser, error) {
+					loads++
+					if location != "mem://root" {
+						t.Fatalf("unsupported reference reached loader at %q", location)
+					}
+					return io.NopCloser(strings.NewReader(fmt.Sprintf("metadata: {id: %q}\nspec: {dependencies: [%q]}\n", uriA, id))), nil
+				})
+				r.Locations = map[string]string{uriA: "mem://root", id: "mem://invalid"}
+				graph, err := r.Resolve(test.root)
+				if err == nil || !strings.Contains(err.Error(), "invalid extension reference") || graph != nil || loads != test.loads {
+					t.Fatalf("expected reference rejection after %d loads, got graph=%v loads=%d error=%v", test.loads, graph, loads, err)
+				}
+			})
+		}
+	}
+}
+
+func TestResolve_VersionAnnotations(t *testing.T) {
+	for _, test := range []struct {
+		name, version, versionYAML string
+		valid                      bool
+	}{
+		{"omitted", "1.0.0", "", true}, {"matching", "1.0.0", "  version: 1.0.0\n", true},
+		{"label", "v1alpha1", "  version: v1alpha1\n", true}, {"digest", "sha256:abc", "  version: sha256:abc\n", true},
+		{"quoted number", "1", "  version: '1'\n", true},
+		{"alias", "1.0.0", "  release: &release 1.0.0\n  version: *release\n", true},
+		{"inherited", "1.0.0", "  <<: {version: 1.0.0}\n", true},
+		{"mismatch", "1.0.0", "  version: 2.0.0\n", false}, {"case mismatch", "v1alpha1", "  version: V1alpha1\n", false},
+		{"empty", "1.0.0", "  version: ''\n", false}, {"null", "1.0.0", "  version: null\n", false},
+		{"number", "1", "  version: 1\n", false}, {"boolean", "true", "  version: true\n", false},
+		{"sequence", "1.0.0", "  version: [1.0.0]\n", false}, {"mapping", "1.0.0", "  version: {value: 1.0.0}\n", false},
+		{"null alias", "1.0.0", "  release: &release null\n  version: *release\n", false},
+		{"inherited null", "1.0.0", "  <<: {version: null}\n", false},
+		{"inherited empty", "1.0.0", "  <<: {version: ''}\n", false},
+	} {
+		for _, role := range []string{"root", "dependency"} {
+			t.Run(role+"/"+test.name, func(t *testing.T) {
+				id := "https://example.test/extensions/example:" + test.version
+				docs := map[string][]byte{"mem://definition.yaml": []byte("metadata:\n  id: " + id + "\n" + test.versionYAML)}
+				r := NewResolver(NewInMemoryLoader(docs))
+				r.Locations = map[string]string{id: "mem://definition.yaml"}
+				root, count := id, 1
+				if role == "dependency" {
+					root, count = uriA, 2
+					r.Locations[uriA] = "mem://root.yaml"
+					docs["mem://root.yaml"] = []byte("metadata: {id: " + uriA + "}\nspec: {dependencies: [" + id + "]}\n")
+				}
+				graph, err := r.Resolve(root)
+				if !test.valid {
+					if err == nil || graph != nil || !strings.Contains(err.Error(), "metadata.version") {
+						t.Fatalf("expected version annotation rejection, got %v", err)
+					}
+					return
+				}
+				expectedVersion := test.version
+				if test.versionYAML == "" {
+					expectedVersion = ""
+				}
+				if err != nil || len(graph.ByID) != count || graph.ByID[id] == nil || graph.ByID[id].Metadata.Version != expectedVersion {
+					t.Fatalf("version annotation changed identity or was not preserved: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestResolve_UnmappedDependencyDoesNotReachLoader(t *testing.T) {
+	r := NewResolver(func(location string) (io.ReadCloser, error) {
+		if location != "mem://root.yaml" {
+			t.Fatalf("unmapped dependency reached loader at %q", location)
+		}
+		return io.NopCloser(strings.NewReader("metadata: {id: " + uriA + "}\nspec: {dependencies: [" + uriB + "]}\n")), nil
+	})
+	r.Locations = map[string]string{uriA: "mem://root.yaml"}
+	if _, err := r.Resolve(uriA); err == nil || !strings.Contains(err.Error(), "no retrieval mapping") {
+		t.Fatalf("expected a missing dependency mapping error, got %v", err)
 	}
 }

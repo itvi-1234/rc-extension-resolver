@@ -2,8 +2,74 @@ package resolver
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestLoadAndMerge_MappedDependencyGraph(t *testing.T) {
+	locations := map[string]string{uriA: "mem://root.yaml", uriB: "mem://dependency.yaml"}
+	docs := map[string][]byte{
+		locations[uriA]: []byte("metadata: {id: " + uriA + ", version: '1'}\nspec:\n  dependencies: [" + uriB + "]\n  kinds: [{name: configuration}]\n"),
+		locations[uriB]: []byte("metadata: {id: " + uriB + "}\nspec:\n  kinds: [{name: api}]\n  interfaceTypes: [{name: http, targetKind: api}]\n"),
+	}
+	catalog, err := LoadAndMerge(NewInMemoryLoader(docs), uriA, locations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range []struct{ kind, owner string }{{"configuration", uriA}, {"api", uriB}} {
+		owner, _, err := catalog.resolveKind(declaration.kind, declaration.owner)
+		if err != nil || owner != declaration.owner {
+			t.Fatalf("kind %q lost canonical owner %q: owner=%q error=%v", declaration.kind, declaration.owner, owner, err)
+		}
+	}
+	if !catalog.IsValidInterfaceType("api", "http") {
+		t.Fatal("dependency interface type was not merged")
+	}
+}
+
+func TestLoadAndMerge_RequiresRootAndDependencyMappings(t *testing.T) {
+	docs := map[string][]byte{
+		"mem://root.yaml": []byte("metadata: {id: " + uriA + "}\nspec: {dependencies: [" + uriB + "]}\n"),
+	}
+	for _, test := range []struct {
+		name, message string
+		locations     map[string]string
+	}{
+		{"missing root", "no retrieval mapping", nil},
+		{"empty root", "empty retrieval location", map[string]string{uriA: ""}},
+		{"missing dependency", "no retrieval mapping", map[string]string{uriA: "mem://root.yaml"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			catalog, err := LoadAndMerge(NewInMemoryLoader(docs), uriA, test.locations)
+			if catalog != nil || err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("expected mapping failure %q, got catalog=%v error=%v", test.message, catalog, err)
+			}
+		})
+	}
+}
+
+func TestLoadAndMerge_PropagatesFetchError(t *testing.T) {
+	const location = "mem://missing.yaml"
+	catalog, err := LoadAndMerge(NewInMemoryLoader(nil), uriA, map[string]string{uriA: location})
+	var fetch *FetchError
+	if catalog != nil || !errors.As(err, &fetch) || fetch.URI != location || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected mapped fetch failure, got catalog=%v error=%v", catalog, err)
+	}
+}
+
+func TestLoadAndMerge_PropagatesMergeConflict(t *testing.T) {
+	locations := map[string]string{uriA: "mem://root.yaml", uriB: "mem://dependency.yaml"}
+	const declarations = "  interfaceTypes: [{name: http, targetKind: api}]\n"
+	docs := map[string][]byte{
+		locations[uriA]: []byte("metadata: {id: " + uriA + "}\nspec:\n  dependencies: [" + uriB + "]\n" + declarations),
+		locations[uriB]: []byte("metadata: {id: " + uriB + "}\nspec:\n" + declarations),
+	}
+	catalog, err := LoadAndMerge(NewInMemoryLoader(docs), uriA, locations)
+	var conflict *ConflictError
+	if catalog != nil || !errors.As(err, &conflict) || conflict.Kind != "api" || conflict.InterfaceType != "http" {
+		t.Fatalf("expected merge conflict, got catalog=%v error=%v", catalog, err)
+	}
+}
 
 func TestMerge_DistinctKindsAcrossExtensions(t *testing.T) {
 	docs := map[string][]byte{

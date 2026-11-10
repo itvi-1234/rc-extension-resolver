@@ -108,8 +108,12 @@ func (c *Catalog) schemasFor(kind, interfaceType string) []schemaEntry {
 	return c.schemas[interfaceTypeKey{kind: kind, typ: interfaceType}]
 }
 
-func LoadAndMerge(loader LoaderFunc, rootURI string) (*Catalog, error) {
-	graph, err := NewResolver(loader).Resolve(rootURI)
+// LoadAndMerge resolves rootID and its dependencies using explicit retrieval
+// mappings, then merges their declarations. Every reference requires a mapping.
+func LoadAndMerge(loader LoaderFunc, rootID string, locations map[string]string) (*Catalog, error) {
+	resolver := NewResolver(loader)
+	resolver.Locations = locations
+	graph, err := resolver.Resolve(rootID)
 	if err != nil {
 		return nil, err
 	}
