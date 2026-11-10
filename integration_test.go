@@ -17,29 +17,25 @@ func extensionsRepoRoot(t *testing.T) string {
 	return filepath.Join("..", "extensions")
 }
 
-// catalogResolverFor maps canonical references to files in the real extensions
-// checkout. Definition bytes are loaded unchanged, so unmigrated identities fail.
+// catalogResolverFor replaces HTTP transport with unchanged real catalog files.
+// The resolver still selects the artifact URL from each requested reference.
 func catalogResolverFor(t *testing.T, root string) *Resolver {
 	t.Helper()
-	idToPath := map[string]string{
-		"https://runtimeconditions.io/extensions/common-integrations:v1alpha1": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/env-configuration:v1alpha1":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/aws/s3:0.1.0":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
+	urlToPath := map[string]string{
+		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
+		"https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
+		"https://runtimeconditions.io/extensions/aws/s3/0.1.0/runtimeconditions.extension.yaml":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
 	}
 	docs := make(map[string][]byte)
-	locations := make(map[string]string)
-	for id, relPath := range idToPath {
+	for artifactURL, relPath := range urlToPath {
 		path := filepath.Join(root, relPath)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Skipf("extensions repo not available at %s (%v); skipping integration test", root, err)
 		}
-		docs[path] = data
-		locations[id] = path
+		docs[artifactURL] = data
 	}
-	resolver := NewResolver(NewInMemoryLoader(docs))
-	resolver.Locations = locations
-	return resolver
+	return NewResolver(NewInMemoryLoader(docs))
 }
 
 func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
@@ -53,10 +49,14 @@ func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 	if len(g.Extensions) != 2 {
 		t.Fatalf("expected 2 extensions (env-configuration + common-integrations), got %d", len(g.Extensions))
 	}
-	for _, id := range []string{"https://runtimeconditions.io/extensions/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations:v1alpha1"} {
+	for _, id := range []string{"https://runtimeconditions.io/extensions/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml"} {
 		if g.ByID[id] == nil {
-			t.Fatalf("canonical identity %q missing from graph", id)
+			t.Fatalf("requested reference %q missing from graph", id)
 		}
+	}
+	definition := g.ByID["https://runtimeconditions.io/extensions/env-configuration:v1alpha1"]
+	if definition.Metadata.ID != "https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml" || definition.Metadata.Version != "v1alpha1" {
+		t.Fatal("resolution changed the definition's separate identity or version")
 	}
 
 	c, err := Merge(g)
@@ -103,5 +103,8 @@ func TestIntegration_ResolveIndependentExtensionNoConflict(t *testing.T) {
 	}
 	if !c.IsValidKind("aws.s3") {
 		t.Error("expected kind aws.s3 to be valid")
+	}
+	if owner, _, err := c.resolveKind("aws.s3", "https://runtimeconditions.io/extensions/aws/s3:0.1.0"); err != nil || owner != "https://runtimeconditions.io/extensions/aws/s3:0.1.0" {
+		t.Fatalf("profile reference did not retain ownership: %q, %v", owner, err)
 	}
 }

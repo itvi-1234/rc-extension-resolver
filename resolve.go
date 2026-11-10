@@ -23,8 +23,8 @@ const (
 type Resolver struct {
 	Loader LoaderFunc
 
-	// Locations maps complete versioned extension references to retrieval
-	// locations. Every requested reference requires an explicit mapping.
+	// Locations optionally maps exact references to retrieval locations. Without
+	// a mapping, official catalog references are expanded; other inputs reach Loader unchanged.
 	Locations map[string]string
 }
 
@@ -39,17 +39,16 @@ type ResolvedGraph struct {
 	ByID       map[string]*ExtensionDefinition
 }
 
-// Resolve preserves exact identifiers; Locations controls where definitions
-// are retrieved. Every definition must declare the requested metadata.id.
+// Resolve preserves exact references independently of definition metadata.
+// Locations overrides automatic catalog lookup and direct loading.
 func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 	g := &ResolvedGraph{ByID: make(map[string]*ExtensionDefinition)}
 	state := make(map[string]visitState)
 
 	var visit func(id string, path []string) error
 	visit = func(id string, path []string) error {
-		version, err := extensionReferenceVersion(id)
-		if err != nil {
-			return fmt.Errorf("invalid extension reference %q: %w", id, err)
+		if id == "" {
+			return fmt.Errorf("extension reference must not be empty")
 		}
 		switch state[id] {
 		case visiting:
@@ -59,9 +58,10 @@ func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 		}
 		state[id] = visiting
 
+		catalogURL, version := officialCatalogLocation(id)
 		location, mapped := r.Locations[id]
 		if !mapped {
-			return fmt.Errorf("extension %q has no retrieval mapping", id)
+			location = catalogURL
 		}
 		if location == "" {
 			return fmt.Errorf("extension %q has an empty retrieval location", id)
@@ -70,10 +70,10 @@ func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 		if err != nil {
 			return err
 		}
-		if ext.Metadata.ID != id {
-			return fmt.Errorf("fetch %s: document declares metadata.id %q, expected %q", location, ext.Metadata.ID, id)
+		if ext.Metadata.ID == "" {
+			return fmt.Errorf("fetch %s: metadata.id must be a non-empty string", location)
 		}
-		if ext.Metadata.Version != "" && ext.Metadata.Version != version {
+		if version != "" && ext.Metadata.Version != "" && ext.Metadata.Version != version {
 			return fmt.Errorf("fetch %s: metadata.version %q must exactly match reference version %q", location, ext.Metadata.Version, version)
 		}
 
@@ -96,34 +96,23 @@ func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 	return g, nil
 }
 
-// extensionReferenceVersion uses the same reference grammar as the binding
-// normalizer: the first literal colon in the final path component (or opaque
-// URI body) separates location from version. Scheme and authority colons do not.
-// Version labels may contain colons; the complete identity is never rewritten.
-func extensionReferenceVersion(id string) (string, error) {
-	parsed, err := url.Parse(id)
-	if err != nil || !parsed.IsAbs() || strings.ContainsAny(id, "?#\\") || strings.ContainsFunc(id, func(r rune) bool {
+// officialCatalogLocation expands <url>:<version> only for HTTPS URLs on
+// runtimeconditions.io with a non-empty location and version. Other references
+// retain their exact spelling for the configured loader or mapping.
+func officialCatalogLocation(reference string) (string, string) {
+	parsed, err := url.Parse(reference)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Hostname(), "runtimeconditions.io") || parsed.User != nil || strings.ContainsAny(reference, "?#\\") || strings.ContainsFunc(reference, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsControl(r)
 	}) {
-		return "", fmt.Errorf("extension reference must be an absolute <location>:<version> URI without whitespace, query, or fragment")
+		return reference, ""
 	}
-	component := parsed.Opaque
-	if component == "" {
-		path := parsed.EscapedPath()
-		component = path[strings.LastIndex(path, "/")+1:]
+	component := reference[strings.LastIndex(reference, "/")+1:]
+	name, version, versioned := strings.Cut(component, ":")
+	if parsed.Path == "" || !versioned || name == "" || version == "" {
+		return reference, ""
 	}
-	location, version, versioned := strings.Cut(component, ":")
-	if !versioned || location == "" || version == "" || version == "." || version == ".." || strings.Contains(version, "/") {
-		return "", fmt.Errorf("extension reference must include a non-empty location and explicit version as <location>:<version>")
-	}
-	name, err := url.PathUnescape(location)
-	if err != nil || strings.HasSuffix(strings.ToLower(name), ".yaml") || strings.HasSuffix(strings.ToLower(name), ".yml") || strings.HasSuffix(strings.ToLower(name), ".json") {
-		return "", fmt.Errorf("extension reference location must identify an extension, not a definition artifact URL")
-	}
-	if parsed.User != nil || (strings.EqualFold(parsed.Scheme, "https") && (parsed.Hostname() == "" || parsed.Opaque != "")) {
-		return "", fmt.Errorf("extension reference forbids credentials and HTTPS references require a host")
-	}
-	return version, nil
+	base := reference[:len(reference)-len(version)-1]
+	return base + "/" + url.PathEscape(version) + "/runtimeconditions.extension.yaml", version
 }
 
 func (r *Resolver) fetch(uri string) (*ExtensionDefinition, error) {

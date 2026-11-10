@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -198,7 +197,7 @@ spec:
 	}
 }
 
-func TestResolve_MismatchedMetadataIDFails(t *testing.T) {
+func TestResolve_ReferenceIsSeparateFromMetadataID(t *testing.T) {
 	docs := map[string][]byte{
 		uriA: []byte(`
 metadata: {id: ` + uriB + `}
@@ -207,9 +206,9 @@ spec: {}
 	}
 	r := NewResolver(NewInMemoryLoader(docs))
 	r.Locations = map[string]string{uriA: uriA}
-	_, err := r.Resolve(uriA)
-	if err == nil {
-		t.Fatal("expected error for mismatched metadata.id, got nil")
+	graph, err := r.Resolve(uriA)
+	if err != nil || graph.ByID[uriA].Metadata.ID != uriB {
+		t.Fatalf("reference replaced definition metadata: %v", err)
 	}
 }
 
@@ -350,7 +349,7 @@ func TestResolve_CanonicalReferenceUsesMappedLocation(t *testing.T) {
 apiVersion: runtimeconditions.io/v1alpha1
 kind: RuntimeConditionsExtensionDefinition
 metadata:
-  id: ` + id + `
+  id: ` + fullURI + `
   version: 0.1.0
 spec:
   kinds:
@@ -365,6 +364,9 @@ spec:
 	if g.ByID[id] == nil || g.ByID[fullURI] != nil {
 		t.Fatalf("expected canonical identifier %s in ByID, got %v", id, g.ByID)
 	}
+	if g.ByID[id].Metadata.ID != fullURI || g.ByID[id].Metadata.Version != "0.1.0" {
+		t.Fatal("definition identity or version was changed")
+	}
 	catalog, err := Merge(g)
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +380,7 @@ func TestResolve_ColonVersionNonSemverVersionWorks(t *testing.T) {
 	// The version segment is an arbitrary string, not constrained to
 	// semver - v1alpha1 must resolve the same way 0.1.0 does.
 	const id = "https://runtimeconditions.io/extensions/common-integrations:v1alpha1"
-	const fullURI = "https://example.test/extensions/common-integrations/v1alpha1/" + standardExtensionFilename
+	const fullURI = "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/" + standardExtensionFilename
 	docs := map[string][]byte{
 		fullURI: []byte(`
 apiVersion: runtimeconditions.io/v1alpha1
@@ -391,7 +393,7 @@ spec:
 `),
 	}
 
-	g := mustResolveLocations(t, docs, map[string]string{id: fullURI}, id)
+	g := mustResolveLocations(t, docs, nil, id)
 	if g.ByID[id] == nil {
 		t.Fatalf("expected canonical identifier %s in ByID", id)
 	}
@@ -414,14 +416,21 @@ spec:
 	for _, id := range []string{"https://example.test/extensions/common-integrations:v1alpha1", "https://example.test/extensions/rc/common-integrations:v1alpha1", ""} {
 		r := NewResolver(NewInMemoryLoader(docs))
 		r.Locations = map[string]string{id: fullURI}
-		if _, err := r.Resolve(id); err == nil {
-			t.Errorf("accepted identifier %q for definition %q", id, fullURI)
+		graph, err := r.Resolve(id)
+		if id == "" {
+			if err == nil {
+				t.Fatal("accepted an empty reference")
+			}
+			continue
+		}
+		if err != nil || graph.ByID[id].Metadata.ID != fullURI {
+			t.Fatalf("mapping changed definition identity: %v", err)
 		}
 	}
 }
 
-func TestResolve_VersionedIdentifiersKeepExactSpelling(t *testing.T) {
-	for _, id := range []string{"https://runtimeconditions.io/extensions/common-integrations:v1alpha1", "https://EXAMPLE.test:8443/CaseSensitive/%73ervice:V1+build", "https://example.test/service:sha256:abc", "urn:service:1.0.0", "custom+resolver:service:1.0.0", "file:///opt/extensions/service:1.0.0", "oci://example.test/extensions:1.0.0"} {
+func TestResolve_ReferencesKeepExactSpelling(t *testing.T) {
+	for _, id := range []string{"https://runtimeconditions.io/extensions/common-integrations:v1alpha1", "https://EXAMPLE.test:8443/CaseSensitive/%73ervice:V1+build", "https://example.test/service:sha256:abc", "urn:service:1.0.0", "custom+resolver:service:1.0.0", "file:///opt/extensions/service:1.0.0", "oci://example.test/extensions:1.0.0", "example.extension", "file:///definition.yaml", "https://example.test/definition.yaml", "  exact spelling  "} {
 		t.Run(id, func(t *testing.T) {
 			g := mustResolve(t, map[string][]byte{id: []byte("metadata: {id: " + id + "}\n")}, id)
 			if g.ByID[id] == nil {
@@ -462,10 +471,11 @@ func TestResolve_MappedCanonicalDependencyGraph(t *testing.T) {
 			t.Fatalf("identity %q was lost, reordered, or fetched more than once", id)
 		}
 	}
-	// Sharing a retrieval location must not deduplicate distinct identities.
+	// Sharing a retrieval location must not deduplicate distinct references.
 	locations[b] = locations[a]
-	if _, err := r.Resolve(root); err == nil {
-		t.Fatal("accepted two identities for one definition")
+	shared, err := r.Resolve(root)
+	if err != nil || len(shared.ByID) != 4 || shared.ByID[b].Metadata.ID != a {
+		t.Fatalf("shared location changed references or metadata: %v", err)
 	}
 	locations[b] = "mem://b"
 	docs[locations[leaf]] = []byte("metadata: {id: " + leaf + "}\nspec: {dependencies: [" + root + "]}\n")
@@ -478,7 +488,7 @@ func TestResolve_MappedCanonicalDependencyGraph(t *testing.T) {
 
 func TestResolve_MappingFailures(t *testing.T) {
 	const id = "https://runtimeconditions.io/extensions/example:1"
-	for _, definitionID := range []string{"", "https://runtimeconditions.io/extensions/example:2"} {
+	for _, definitionID := range []string{""} {
 		r := NewResolver(NewInMemoryLoader(map[string][]byte{"mem://definition": []byte("metadata: {id: '" + definitionID + "'}\n")}))
 		r.Locations = map[string]string{id: "mem://definition"}
 		if _, err := r.Resolve(id); err == nil {
@@ -500,45 +510,73 @@ func TestResolve_MappingFailures(t *testing.T) {
 	if _, err := r.Resolve(id); err == nil {
 		t.Fatal("accepted an empty retrieval mapping")
 	}
-	delete(r.Locations, id)
-	if _, err := r.Resolve(id); err == nil || !strings.Contains(err.Error(), "no retrieval mapping") {
-		t.Fatalf("expected a missing retrieval mapping error, got %v", err)
+}
+
+func TestResolve_CatalogLookupIsScoped(t *testing.T) {
+	for _, test := range []struct{ reference, location string }{
+		{"https://runtimeconditions.io/extensions/common-integrations:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml"},
+		{"https://runtimeconditions.io/extensions/aws/s3:0.1.0", "https://runtimeconditions.io/extensions/aws/s3/0.1.0/runtimeconditions.extension.yaml"},
+		{"https://runtimeconditions.io/extensions/service:sha256:abc", "https://runtimeconditions.io/extensions/service/sha256:abc/runtimeconditions.extension.yaml"},
+		{"https://runtimeconditions.io/extensions/%73ervice:rélease", "https://runtimeconditions.io/extensions/%73ervice/r%C3%A9lease/runtimeconditions.extension.yaml"},
+		{"https://RUNTIMECONDITIONS.IO/extensions/service:v1", "https://RUNTIMECONDITIONS.IO/extensions/service/v1/runtimeconditions.extension.yaml"},
+		{"https://runtimeconditions.io:8443/extensions/service:v1", "https://runtimeconditions.io:8443/extensions/service/v1/runtimeconditions.extension.yaml"},
+		{"http://runtimeconditions.io/extensions/service:v1", ""},
+		{"https://example.test/extensions/service:v1", ""},
+		{"https://runtimeconditions.io.example.test/extensions/service:v1", ""},
+		{"https://sub.runtimeconditions.io/extensions/service:v1", ""},
+		{"https://runtimeconditions.io/extensions/service", ""},
+		{"https://runtimeconditions.io/extensions/service:", ""},
+		{"https://runtimeconditions.io/:v1", ""}, {"https://runtimeconditions.io:8443", ""},
+		{"//runtimeconditions.io/extensions/service:v1", ""}, {":v1", ""}, {"example.extension", ""},
+		{"file:///definition.yaml", ""}, {"oci://registry.test/extension:1", ""}, {"urn:example:extension", ""}, {"  exact spelling  ", ""},
+		{"https://runtimeconditions.io/extensions/service:v1?query=1", ""},
+		{"https://runtimeconditions.io/extensions/service:v1#fragment", ""},
+		{"https://user@runtimeconditions.io/extensions/service:v1", ""},
+		{"https://runtimeconditions.io/extensions/%invalid:v1", ""},
+	} {
+		t.Run(test.reference, func(t *testing.T) {
+			want := test.location
+			if want == "" {
+				want = test.reference
+			}
+			loads := 0
+			r := NewResolver(func(location string) (io.ReadCloser, error) {
+				loads++
+				if location != want {
+					t.Fatalf("retrieved %q, expected %q", location, want)
+				}
+				return io.NopCloser(strings.NewReader("metadata: {id: independent.definition}\n")), nil
+			})
+			graph, err := r.Resolve(test.reference)
+			if err != nil || loads != 1 || graph.ByID[test.reference].Metadata.ID != "independent.definition" {
+				t.Fatalf("reference or definition identity changed: %v", err)
+			}
+		})
 	}
 }
 
-func TestResolve_RejectsUnsupportedReferencesBeforeLoading(t *testing.T) {
-	for _, id := range []string{
-		"", "relative/path:1", "/absolute/path:1", "//example.test/path:1", "1bad:service:1",
-		"https://example.test/service", "https://example.test:8443", "urn:release-a", "custom+resolver:release-a",
-		"https://example.test/service:", "https://example.test/:1", "https://example.test/service:.", "https://example.test/service:..",
-		"https:///service:1", "https://user@example.test/service:1", "https://example.test/%invalid:1",
-		"https://example.test/service:bad version", "https://example.test/service:bad\u0085version", "https://example.test/service:bad\\version",
-		"https://example.test/service:1?revision=abc", "https://example.test/service:1#fragment",
-		"file:///opt/extensions/release.yaml", "oci://example.test/extensions",
-		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml",
-		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml:v1alpha1",
-		"https://example.test/definition.yml:1", "https://example.test/definition.json:1", "https://example.test/definition%2Eyaml:1",
-	} {
-		for _, test := range []struct {
-			name, root string
-			loads      int
-		}{{"root", id, 0}, {"dependency", uriA, 1}} {
-			t.Run(test.name+"/"+id, func(t *testing.T) {
-				loads := 0
-				r := NewResolver(func(location string) (io.ReadCloser, error) {
-					loads++
-					if location != "mem://root" {
-						t.Fatalf("unsupported reference reached loader at %q", location)
-					}
-					return io.NopCloser(strings.NewReader(fmt.Sprintf("metadata: {id: %q}\nspec: {dependencies: [%q]}\n", uriA, id))), nil
-				})
-				r.Locations = map[string]string{uriA: "mem://root", id: "mem://invalid"}
-				graph, err := r.Resolve(test.root)
-				if err == nil || !strings.Contains(err.Error(), "invalid extension reference") || graph != nil || loads != test.loads {
-					t.Fatalf("expected reference rejection after %d loads, got graph=%v loads=%d error=%v", test.loads, graph, loads, err)
-				}
-			})
+func TestResolve_OfficialDependencyUsesCatalogLookup(t *testing.T) {
+	const dependency = "https://runtimeconditions.io/extensions/common-integrations:v1alpha1"
+	const artifact = "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml"
+	docs := map[string][]byte{
+		"example.root": []byte("metadata: {id: independent.root}\nspec: {dependencies: [" + dependency + "]}\n"),
+		artifact:       []byte("metadata: {id: independent.dependency, version: v1alpha1}\n"),
+	}
+	graph, err := NewResolver(NewInMemoryLoader(docs)).Resolve("example.root")
+	if err != nil || len(graph.ByID) != 2 || graph.ByID[dependency].Metadata.ID != "independent.dependency" {
+		t.Fatalf("official dependency was not resolved by its exact reference: %v", err)
+	}
+}
+
+func TestResolve_EmptyDependencyDoesNotReachLoader(t *testing.T) {
+	r := NewResolver(func(location string) (io.ReadCloser, error) {
+		if location != "example.root" {
+			t.Fatalf("empty dependency reached loader at %q", location)
 		}
+		return io.NopCloser(strings.NewReader("metadata: {id: independent.root}\nspec: {dependencies: ['']}\n")), nil
+	})
+	if graph, err := r.Resolve("example.root"); graph != nil || err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("expected an empty dependency error, got %v", err)
 	}
 }
 
@@ -562,8 +600,8 @@ func TestResolve_VersionAnnotations(t *testing.T) {
 	} {
 		for _, role := range []string{"root", "dependency"} {
 			t.Run(role+"/"+test.name, func(t *testing.T) {
-				id := "https://example.test/extensions/example:" + test.version
-				docs := map[string][]byte{"mem://definition.yaml": []byte("metadata:\n  id: " + id + "\n" + test.versionYAML)}
+				id := "https://runtimeconditions.io/extensions/example:" + test.version
+				docs := map[string][]byte{"mem://definition.yaml": []byte("metadata:\n  id: independent.definition\n" + test.versionYAML)}
 				r := NewResolver(NewInMemoryLoader(docs))
 				r.Locations = map[string]string{id: "mem://definition.yaml"}
 				root, count := id, 1
@@ -583,7 +621,7 @@ func TestResolve_VersionAnnotations(t *testing.T) {
 				if test.versionYAML == "" {
 					expectedVersion = ""
 				}
-				if err != nil || len(graph.ByID) != count || graph.ByID[id] == nil || graph.ByID[id].Metadata.Version != expectedVersion {
+				if err != nil || len(graph.ByID) != count || graph.ByID[id] == nil || graph.ByID[id].Metadata.ID != "independent.definition" || graph.ByID[id].Metadata.Version != expectedVersion {
 					t.Fatalf("version annotation changed identity or was not preserved: %v", err)
 				}
 			})
@@ -591,15 +629,18 @@ func TestResolve_VersionAnnotations(t *testing.T) {
 	}
 }
 
-func TestResolve_UnmappedDependencyDoesNotReachLoader(t *testing.T) {
+func TestResolve_UnmappedDependencyUsesLoader(t *testing.T) {
 	r := NewResolver(func(location string) (io.ReadCloser, error) {
+		if location == uriB {
+			return io.NopCloser(strings.NewReader("metadata: {id: independent.dependency, version: anything}\n")), nil
+		}
 		if location != "mem://root.yaml" {
-			t.Fatalf("unmapped dependency reached loader at %q", location)
+			t.Fatalf("unexpected location %q", location)
 		}
 		return io.NopCloser(strings.NewReader("metadata: {id: " + uriA + "}\nspec: {dependencies: [" + uriB + "]}\n")), nil
 	})
 	r.Locations = map[string]string{uriA: "mem://root.yaml"}
-	if _, err := r.Resolve(uriA); err == nil || !strings.Contains(err.Error(), "no retrieval mapping") {
-		t.Fatalf("expected a missing dependency mapping error, got %v", err)
+	if graph, err := r.Resolve(uriA); err != nil || graph.ByID[uriB].Metadata.ID != "independent.dependency" {
+		t.Fatalf("unmapped dependency was not loaded unchanged: %v", err)
 	}
 }
