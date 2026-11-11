@@ -11,6 +11,11 @@ type ExtensionDefinition struct {
 	Kind       string            `yaml:"kind" json:"kind"`
 	Metadata   ExtensionMetadata `yaml:"metadata" json:"metadata"`
 	Spec       ExtensionSpec     `yaml:"spec" json:"spec"`
+
+	// Location is where the resolver retrieved this definition from. It is not
+	// part of the document. It identifies one definition reached under several
+	// references, such as <url>:<version> and the full file URL.
+	Location string `yaml:"-" json:"-"`
 }
 
 type ExtensionMetadata struct {

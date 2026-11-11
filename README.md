@@ -43,7 +43,21 @@ https://runtimeconditions.io/extensions/common-integrations:v1alpha1
 Other references reach the loader unchanged. A custom loader can resolve opaque
 identifiers, local files, or other reference forms. The supplied HTTP loader
 fetches URLs. References retain their exact spelling in graph keys and Condition
-extension selectors.
+extension selectors. A version of `.` or `..` is never expanded.
+
+To resolve several roots into one graph, such as every item of a profile's
+`extensions`, call `Resolver.ResolveAll(roots...)`. The graph is keyed by each
+reference exactly as written, so a Condition's `extension` selector matches the
+spelling the profile used.
+
+Each resolved definition records the `Location` it was retrieved from. The same
+file can be reached under more than one reference, for example
+`https://runtimeconditions.io/extensions/common-integrations:v1alpha1` from a
+profile and the full file URL from another extension's `dependencies`. `Merge`
+treats references with the same `Location` as one definition: they do not
+conflict, a schema is bound once, and the kind is not reported as ambiguous.
+Definitions from different locations that declare the same interface type or
+schema still conflict.
 
 Definition metadata stays separate: `metadata.id` is a non-empty string and
 `metadata.version` is optional. For an official catalog reference, a declared

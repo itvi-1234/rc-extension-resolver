@@ -42,6 +42,14 @@ type ResolvedGraph struct {
 // Resolve preserves exact references independently of definition metadata.
 // Locations overrides automatic catalog lookup and direct loading.
 func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
+	return r.ResolveAll(rootID)
+}
+
+// ResolveAll resolves several roots, such as every item of a profile's
+// extensions, into one graph. Every reference keeps its exact spelling as a
+// graph key, and a reference reached from more than one root is fetched once.
+// Two spellings of the same file stay two references that share a Location.
+func (r *Resolver) ResolveAll(rootIDs ...string) (*ResolvedGraph, error) {
 	g := &ResolvedGraph{ByID: make(map[string]*ExtensionDefinition)}
 	state := make(map[string]visitState)
 
@@ -90,8 +98,10 @@ func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 		return nil
 	}
 
-	if err := visit(rootID, nil); err != nil {
-		return nil, err
+	for _, rootID := range rootIDs {
+		if err := visit(rootID, nil); err != nil {
+			return nil, err
+		}
 	}
 	return g, nil
 }
@@ -108,7 +118,9 @@ func officialCatalogLocation(reference string) (string, string) {
 	}
 	component := reference[strings.LastIndex(reference, "/")+1:]
 	name, version, versioned := strings.Cut(component, ":")
-	if parsed.Path == "" || !versioned || name == "" || version == "" {
+	// A version of "." or ".." would turn the expanded location into a path that
+	// leaves the extension's directory.
+	if parsed.Path == "" || !versioned || name == "" || version == "" || version == "." || version == ".." {
 		return reference, ""
 	}
 	base := reference[:len(reference)-len(version)-1]
@@ -131,5 +143,6 @@ func (r *Resolver) fetch(uri string) (*ExtensionDefinition, error) {
 	if err := yaml.Unmarshal(data, &ext); err != nil {
 		return nil, &FetchError{URI: uri, Err: fmt.Errorf("parsing document: %w", err)}
 	}
+	ext.Location = uri
 	return &ext, nil
 }
