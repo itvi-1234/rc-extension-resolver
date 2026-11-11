@@ -531,6 +531,8 @@ func TestResolve_CatalogLookupIsScoped(t *testing.T) {
 		{"file:///definition.yaml", ""}, {"oci://registry.test/extension:1", ""}, {"urn:example:extension", ""}, {"  exact spelling  ", ""},
 		{"https://runtimeconditions.io/extensions/service:v1?query=1", ""},
 		{"https://runtimeconditions.io/extensions/service:v1#fragment", ""},
+		{"https://runtimeconditions.io/extensions/service:..", ""},
+		{"https://runtimeconditions.io/extensions/service:.", ""},
 		{"https://user@runtimeconditions.io/extensions/service:v1", ""},
 		{"https://runtimeconditions.io/extensions/%invalid:v1", ""},
 	} {

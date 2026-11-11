@@ -30,9 +30,14 @@ type Catalog struct {
 	kindOwners map[string][]string
 	typeOwner  map[interfaceTypeKey]string
 	schemaIDs  map[string]string
-	schemas    map[interfaceTypeKey][]schemaEntry
-	compiled   map[string]*compiledSchema
-	compileMu  sync.Mutex
+	// The definitions behind the owners above, so that one definition reached
+	// under several references is not mistaken for several extensions.
+	ownerDef  map[string]*ExtensionDefinition
+	typeDef   map[interfaceTypeKey]*ExtensionDefinition
+	schemaDef map[string]*ExtensionDefinition
+	schemas   map[interfaceTypeKey][]schemaEntry
+	compiled  map[string]*compiledSchema
+	compileMu sync.Mutex
 }
 
 func Merge(graph *ResolvedGraph) (*Catalog, error) {
@@ -40,6 +45,9 @@ func Merge(graph *ResolvedGraph) (*Catalog, error) {
 		kindOwners: make(map[string][]string),
 		typeOwner:  make(map[interfaceTypeKey]string),
 		schemaIDs:  make(map[string]string),
+		ownerDef:   make(map[string]*ExtensionDefinition),
+		typeDef:    make(map[interfaceTypeKey]*ExtensionDefinition),
+		schemaDef:  make(map[string]*ExtensionDefinition),
 		schemas:    make(map[interfaceTypeKey][]schemaEntry),
 		compiled:   make(map[string]*compiledSchema),
 	}
@@ -63,24 +71,47 @@ func Merge(graph *ResolvedGraph) (*Catalog, error) {
 	return c, nil
 }
 
+// definitionKey identifies a definition independently of the reference it was
+// reached by: where it was retrieved from, or the object itself when the graph
+// was built without a resolver.
+func definitionKey(ext *ExtensionDefinition) any {
+	if ext.Location != "" {
+		return ext.Location
+	}
+	return ext
+}
+
+func sameDefinition(a, b *ExtensionDefinition) bool {
+	return a != nil && b != nil && definitionKey(a) == definitionKey(b)
+}
+
 func (c *Catalog) mergeExtension(ext *ExtensionDefinition, owner string) error {
+	c.ownerDef[owner] = ext
+
 	for _, k := range ext.Spec.Kinds {
 		c.kindOwners[k.Name] = append(c.kindOwners[k.Name], owner)
 	}
 
 	for _, it := range ext.Spec.InterfaceTypes {
 		key := interfaceTypeKey{kind: it.TargetKind, typ: it.Name}
-		if existing, ok := c.typeOwner[key]; ok && existing != owner {
+		if existing, ok := c.typeOwner[key]; ok && existing != owner && !sameDefinition(c.typeDef[key], ext) {
 			return &ConflictError{Kind: it.TargetKind, InterfaceType: it.Name, DeclaredBy: []string{existing, owner}}
 		}
-		c.typeOwner[key] = owner
+		if _, ok := c.typeOwner[key]; !ok {
+			c.typeOwner[key], c.typeDef[key] = owner, ext
+		}
 	}
 
 	for _, s := range ext.Spec.Schemas {
-		if existing, ok := c.schemaIDs[s.ID]; ok && existing != owner {
-			return &ConflictError{Kind: s.AppliesToKind, InterfaceType: s.AppliesToInterfaceType, DeclaredBy: []string{existing, owner}}
+		existing, ok := c.schemaIDs[s.ID]
+		if ok && existing != owner {
+			if !sameDefinition(c.schemaDef[s.ID], ext) {
+				return &ConflictError{Kind: s.AppliesToKind, InterfaceType: s.AppliesToInterfaceType, DeclaredBy: []string{existing, owner}}
+			}
+			// The same definition reached under another reference: already bound.
+			continue
 		}
-		c.schemaIDs[s.ID] = owner
+		c.schemaIDs[s.ID], c.schemaDef[s.ID] = owner, ext
 
 		key := interfaceTypeKey{kind: s.AppliesToKind, typ: s.AppliesToInterfaceType}
 		c.schemas[key] = append(c.schemas[key], schemaEntry{def: s, ownerURI: owner})
@@ -109,10 +140,24 @@ func (c *Catalog) resolveKind(kind, extension string) (owner string, match KindM
 		}
 		return "", "", &ExtensionMismatchError{Kind: kind, Extension: extension}
 	}
-	if len(owners) > 1 {
+	if c.distinctDefinitions(owners) > 1 {
 		return owners[0], KindMatchFallback, nil
 	}
 	return owners[0], "", nil
+}
+
+// distinctDefinitions counts the definitions behind owners. One definition
+// reached under two references has two owners but is not an ambiguous kind.
+func (c *Catalog) distinctDefinitions(owners []string) int {
+	seen := make(map[any]struct{}, len(owners))
+	for _, owner := range owners {
+		if ext := c.ownerDef[owner]; ext != nil {
+			seen[definitionKey(ext)] = struct{}{}
+		} else {
+			seen[owner] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 func (c *Catalog) IsValidInterfaceType(kind, interfaceType string) bool {
