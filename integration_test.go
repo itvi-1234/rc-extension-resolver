@@ -17,40 +17,46 @@ func extensionsRepoRoot(t *testing.T) string {
 	return filepath.Join("..", "extensions")
 }
 
-// fileLoaderFor maps published identifier URIs to their file on disk in a
-// checkout of the extensions repo, per the table in that repo's README.
-// This is the resolver's real fetch path with the network swapped for a
-// local checkout - no fake documents, no mocked schema shapes.
-func fileLoaderFor(t *testing.T, root string) LoaderFunc {
+// catalogResolverFor replaces HTTP transport with unchanged real catalog files.
+// The resolver still selects the artifact URL from each requested reference.
+func catalogResolverFor(t *testing.T, root string) *Resolver {
 	t.Helper()
-	uriToPath := map[string]string{
+	urlToPath := map[string]string{
 		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
 		"https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/aws-s3/0.1.0/runtimeconditions.extension.yaml":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
+		"https://runtimeconditions.io/extensions/aws/s3/0.1.0/runtimeconditions.extension.yaml":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
 	}
 	docs := make(map[string][]byte)
-	for uri, relPath := range uriToPath {
-		data, err := os.ReadFile(filepath.Join(root, relPath))
+	for artifactURL, relPath := range urlToPath {
+		path := filepath.Join(root, relPath)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Skipf("extensions repo not available at %s (%v); skipping integration test", root, err)
 		}
-		docs[uri] = data
+		docs[artifactURL] = data
 	}
-	return NewInMemoryLoader(docs)
+	return NewResolver(NewInMemoryLoader(docs))
 }
 
 func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 	root := extensionsRepoRoot(t)
-	loader := fileLoaderFor(t, root)
-
-	r := NewResolver(loader)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml")
+	r := catalogResolverFor(t, root)
+	g, err := r.Resolve("https://runtimeconditions.io/extensions/env-configuration:v1alpha1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	// env-configuration depends on common-integrations, so both should be present.
 	if len(g.Extensions) != 2 {
 		t.Fatalf("expected 2 extensions (env-configuration + common-integrations), got %d", len(g.Extensions))
+	}
+	for _, id := range []string{"https://runtimeconditions.io/extensions/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml"} {
+		if g.ByID[id] == nil {
+			t.Fatalf("requested reference %q missing from graph", id)
+		}
+	}
+	definition := g.ByID["https://runtimeconditions.io/extensions/env-configuration:v1alpha1"]
+	if definition.Metadata.ID != "https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml" || definition.Metadata.Version != "v1alpha1" {
+		t.Fatal("resolution changed the definition's separate identity or version")
 	}
 
 	c, err := Merge(g)
@@ -86,10 +92,8 @@ func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 
 func TestIntegration_ResolveIndependentExtensionNoConflict(t *testing.T) {
 	root := extensionsRepoRoot(t)
-	loader := fileLoaderFor(t, root)
-
-	r := NewResolver(loader)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/aws-s3/0.1.0/runtimeconditions.extension.yaml")
+	r := catalogResolverFor(t, root)
+	g, err := r.Resolve("https://runtimeconditions.io/extensions/aws/s3:0.1.0")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -99,5 +103,8 @@ func TestIntegration_ResolveIndependentExtensionNoConflict(t *testing.T) {
 	}
 	if !c.IsValidKind("aws.s3") {
 		t.Error("expected kind aws.s3 to be valid")
+	}
+	if owner, _, err := c.resolveKind("aws.s3", "https://runtimeconditions.io/extensions/aws/s3:0.1.0"); err != nil || owner != "https://runtimeconditions.io/extensions/aws/s3:0.1.0" {
+		t.Fatalf("profile reference did not retain ownership: %q, %v", owner, err)
 	}
 }

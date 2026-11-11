@@ -1,5 +1,11 @@
 package resolver
 
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
+
 type ExtensionDefinition struct {
 	APIVersion string            `yaml:"apiVersion" json:"apiVersion"`
 	Kind       string            `yaml:"kind" json:"kind"`
@@ -8,7 +14,27 @@ type ExtensionDefinition struct {
 }
 
 type ExtensionMetadata struct {
-	ID string `yaml:"id" json:"id"`
+	ID      string `yaml:"id" json:"id"`
+	Version string `yaml:"version,omitempty" json:"version,omitempty"`
+}
+
+func (metadata *ExtensionMetadata) UnmarshalYAML(node *yaml.Node) error {
+	var decoded struct {
+		ID      string    `yaml:"id"`
+		Version yaml.Node `yaml:"version"`
+	}
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	version := &decoded.Version
+	for version.Kind == yaml.AliasNode {
+		version = version.Alias
+	}
+	if version.Kind != 0 && (version.Tag != "!!str" || version.Value == "") {
+		return fmt.Errorf("metadata.version must be a non-empty string when present")
+	}
+	*metadata = ExtensionMetadata{ID: decoded.ID, Version: version.Value}
+	return nil
 }
 
 type ExtensionSpec struct {

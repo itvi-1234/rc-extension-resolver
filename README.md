@@ -28,10 +28,32 @@ map all work the same way.
 
 ## Usage
 
+`LoadAndMerge(loader, rootID, locations)` accepts an optional retrieval map.
+Pass `nil` to use automatic official-catalog lookup or load a reference directly.
+
+Automatic catalog lookup recognizes `<url>:<version>` only when the URL uses
+HTTPS, its hostname is exactly `runtimeconditions.io`, and both the URL and
+version are present. For example:
+
+```text
+https://runtimeconditions.io/extensions/common-integrations:v1alpha1
+→ https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml
+```
+
+Other references reach the loader unchanged. A custom loader can resolve opaque
+identifiers, local files, or other reference forms. The supplied HTTP loader
+fetches URLs. References retain their exact spelling in graph keys and Condition
+extension selectors.
+
+Definition metadata stays separate: `metadata.id` is a non-empty string and
+`metadata.version` is optional. For an official catalog reference, a declared
+version must match the requested version; an omitted version is valid. Resolution
+preserves both metadata fields.
+
 ```go
 loader := resolver.NewHTTPLoader(10 * time.Second)
 
-catalog, err := resolver.LoadAndMerge(loader, profile.Extensions[0])
+catalog, err := resolver.LoadAndMerge(loader, profile.Extensions[0], nil)
 if err != nil {
     // resolution or merge failed
 }
@@ -43,6 +65,24 @@ if err != nil {
 if !result.Valid {
     // result.Errors has the schema validation failures
 }
+```
+
+To override retrieval, supply a map keyed by exact reference strings. Map values
+are locations passed to the loader. Mappings take precedence over automatic
+lookup for roots and dependencies; unmapped references use normal resolution.
+An explicitly empty mapped location is an error.
+
+```go
+locations := map[string]string{
+    "example.extension": "https://example.test/definitions/extension.yaml",
+}
+catalog, err := resolver.LoadAndMerge(loader, "example.extension", locations)
+```
+
+The optional live catalog tests make real HTTPS requests:
+
+```sh
+go test -tags=live -run '^TestResolve_LiveOfficialCatalog$' ./...
 ```
 
 ## Install

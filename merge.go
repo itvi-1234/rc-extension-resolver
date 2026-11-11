@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -43,33 +44,48 @@ func Merge(graph *ResolvedGraph) (*Catalog, error) {
 		compiled:   make(map[string]*compiledSchema),
 	}
 
+	references := make(map[*ExtensionDefinition][]string, len(graph.ByID))
+	for reference, definition := range graph.ByID {
+		references[definition] = append(references[definition], reference)
+	}
 	for _, ext := range graph.Extensions {
-		owner := ext.Metadata.ID
-
-		for _, k := range ext.Spec.Kinds {
-			c.kindOwners[k.Name] = append(c.kindOwners[k.Name], owner)
+		owners := references[ext]
+		if len(owners) == 0 {
+			owners = []string{ext.Metadata.ID}
 		}
-
-		for _, it := range ext.Spec.InterfaceTypes {
-			key := interfaceTypeKey{kind: it.TargetKind, typ: it.Name}
-			if existing, ok := c.typeOwner[key]; ok && existing != owner {
-				return nil, &ConflictError{Kind: it.TargetKind, InterfaceType: it.Name, DeclaredBy: []string{existing, owner}}
+		sort.Strings(owners)
+		for _, owner := range owners {
+			if err := c.mergeExtension(ext, owner); err != nil {
+				return nil, err
 			}
-			c.typeOwner[key] = owner
-		}
-
-		for _, s := range ext.Spec.Schemas {
-			if existing, ok := c.schemaIDs[s.ID]; ok && existing != owner {
-				return nil, &ConflictError{Kind: s.AppliesToKind, InterfaceType: s.AppliesToInterfaceType, DeclaredBy: []string{existing, owner}}
-			}
-			c.schemaIDs[s.ID] = owner
-
-			key := interfaceTypeKey{kind: s.AppliesToKind, typ: s.AppliesToInterfaceType}
-			c.schemas[key] = append(c.schemas[key], schemaEntry{def: s, ownerURI: owner})
 		}
 	}
-
 	return c, nil
+}
+
+func (c *Catalog) mergeExtension(ext *ExtensionDefinition, owner string) error {
+	for _, k := range ext.Spec.Kinds {
+		c.kindOwners[k.Name] = append(c.kindOwners[k.Name], owner)
+	}
+
+	for _, it := range ext.Spec.InterfaceTypes {
+		key := interfaceTypeKey{kind: it.TargetKind, typ: it.Name}
+		if existing, ok := c.typeOwner[key]; ok && existing != owner {
+			return &ConflictError{Kind: it.TargetKind, InterfaceType: it.Name, DeclaredBy: []string{existing, owner}}
+		}
+		c.typeOwner[key] = owner
+	}
+
+	for _, s := range ext.Spec.Schemas {
+		if existing, ok := c.schemaIDs[s.ID]; ok && existing != owner {
+			return &ConflictError{Kind: s.AppliesToKind, InterfaceType: s.AppliesToInterfaceType, DeclaredBy: []string{existing, owner}}
+		}
+		c.schemaIDs[s.ID] = owner
+
+		key := interfaceTypeKey{kind: s.AppliesToKind, typ: s.AppliesToInterfaceType}
+		c.schemas[key] = append(c.schemas[key], schemaEntry{def: s, ownerURI: owner})
+	}
+	return nil
 }
 
 func (c *Catalog) IsValidKind(kind string) bool {
@@ -108,8 +124,12 @@ func (c *Catalog) schemasFor(kind, interfaceType string) []schemaEntry {
 	return c.schemas[interfaceTypeKey{kind: kind, typ: interfaceType}]
 }
 
-func LoadAndMerge(loader LoaderFunc, rootURI string) (*Catalog, error) {
-	graph, err := NewResolver(loader).Resolve(rootURI)
+// LoadAndMerge resolves rootID and its dependencies, then merges their
+// declarations. Locations may be nil to use catalog lookup or the loader directly.
+func LoadAndMerge(loader LoaderFunc, rootID string, locations map[string]string) (*Catalog, error) {
+	resolver := NewResolver(loader)
+	resolver.Locations = locations
+	graph, err := resolver.Resolve(rootID)
 	if err != nil {
 		return nil, err
 	}

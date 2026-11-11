@@ -5,38 +5,10 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
-
-const standardExtensionFilename = "runtimeconditions.extension.yaml"
-
-const defaultCatalogNamespaceMarker = "/extensions/rc/"
-
-func normalizeExtensionURI(uri string) string {
-	if idx := strings.LastIndex(uri, ":"); idx > 0 {
-		base, version := uri[:idx], uri[idx+1:]
-		if version != "" && isAbsoluteHTTPURI(base) {
-			return stripDefaultNamespace(strings.TrimSuffix(base, "/")) + "/" + version + "/" + standardExtensionFilename
-		}
-	}
-	if strings.HasSuffix(uri, "/") {
-		return stripDefaultNamespace(strings.TrimSuffix(uri, "/")) + "/" + standardExtensionFilename
-	}
-	return uri
-}
-
-func isAbsoluteHTTPURI(s string) bool {
-	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
-}
-
-func stripDefaultNamespace(uri string) string {
-	if idx := strings.Index(uri, defaultCatalogNamespaceMarker); idx != -1 {
-		return uri[:idx] + "/extensions/" + uri[idx+len(defaultCatalogNamespaceMarker):]
-	}
-	return uri
-}
 
 // visitState is the three-color DFS scheme: visiting-but-not-visited
 // means we've looped back to an ancestor, i.e. a cycle.
@@ -50,6 +22,10 @@ const (
 
 type Resolver struct {
 	Loader LoaderFunc
+
+	// Locations optionally maps exact references to retrieval locations. Without
+	// a mapping, official catalog references are expanded; other inputs reach Loader unchanged.
+	Locations map[string]string
 }
 
 func NewResolver(loader LoaderFunc) *Resolver {
@@ -57,52 +33,86 @@ func NewResolver(loader LoaderFunc) *Resolver {
 }
 
 // ResolvedGraph is every extension reachable from a root, deduplicated by
-// identifier URI, in dependency-first order.
+// exact extension identifier, in dependency-first order.
 type ResolvedGraph struct {
 	Extensions []*ExtensionDefinition
 	ByID       map[string]*ExtensionDefinition
 }
 
-func (r *Resolver) Resolve(rootURI string) (*ResolvedGraph, error) {
+// Resolve preserves exact references independently of definition metadata.
+// Locations overrides automatic catalog lookup and direct loading.
+func (r *Resolver) Resolve(rootID string) (*ResolvedGraph, error) {
 	g := &ResolvedGraph{ByID: make(map[string]*ExtensionDefinition)}
 	state := make(map[string]visitState)
 
-	var visit func(uri string, path []string) error
-	visit = func(uri string, path []string) error {
-		uri = normalizeExtensionURI(uri)
-		switch state[uri] {
+	var visit func(id string, path []string) error
+	visit = func(id string, path []string) error {
+		if id == "" {
+			return fmt.Errorf("extension reference must not be empty")
+		}
+		switch state[id] {
 		case visiting:
-			return &CycleError{Path: append(append([]string{}, path...), uri)}
+			return &CycleError{Path: append(append([]string{}, path...), id)}
 		case visited:
 			return nil
 		}
-		state[uri] = visiting
+		state[id] = visiting
 
-		ext, err := r.fetch(uri)
+		catalogURL, version := officialCatalogLocation(id)
+		location, mapped := r.Locations[id]
+		if !mapped {
+			location = catalogURL
+		}
+		if location == "" {
+			return fmt.Errorf("extension %q has an empty retrieval location", id)
+		}
+		ext, err := r.fetch(location)
 		if err != nil {
 			return err
 		}
-		if ext.Metadata.ID != "" && ext.Metadata.ID != uri {
-			return fmt.Errorf("fetch %s: document declares metadata.id %q, expected %q", uri, ext.Metadata.ID, uri)
+		if ext.Metadata.ID == "" {
+			return fmt.Errorf("fetch %s: metadata.id must be a non-empty string", location)
+		}
+		if version != "" && ext.Metadata.Version != "" && ext.Metadata.Version != version {
+			return fmt.Errorf("fetch %s: metadata.version %q must exactly match reference version %q", location, ext.Metadata.Version, version)
 		}
 
-		nextPath := append(append([]string{}, path...), uri)
+		nextPath := append(append([]string{}, path...), id)
 		for _, dep := range ext.Spec.Dependencies {
 			if err := visit(dep, nextPath); err != nil {
 				return err
 			}
 		}
 
-		state[uri] = visited
-		g.ByID[uri] = ext
+		state[id] = visited
+		g.ByID[id] = ext
 		g.Extensions = append(g.Extensions, ext)
 		return nil
 	}
 
-	if err := visit(rootURI, nil); err != nil {
+	if err := visit(rootID, nil); err != nil {
 		return nil, err
 	}
 	return g, nil
+}
+
+// officialCatalogLocation expands <url>:<version> only for HTTPS URLs on
+// runtimeconditions.io with a non-empty location and version. Other references
+// retain their exact spelling for the configured loader or mapping.
+func officialCatalogLocation(reference string) (string, string) {
+	parsed, err := url.Parse(reference)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Hostname(), "runtimeconditions.io") || parsed.User != nil || strings.ContainsAny(reference, "?#\\") || strings.ContainsFunc(reference, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return reference, ""
+	}
+	component := reference[strings.LastIndex(reference, "/")+1:]
+	name, version, versioned := strings.Cut(component, ":")
+	if parsed.Path == "" || !versioned || name == "" || version == "" {
+		return reference, ""
+	}
+	base := reference[:len(reference)-len(version)-1]
+	return base + "/" + url.PathEscape(version) + "/runtimeconditions.extension.yaml", version
 }
 
 func (r *Resolver) fetch(uri string) (*ExtensionDefinition, error) {
