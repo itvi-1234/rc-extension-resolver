@@ -22,8 +22,8 @@ func extensionsRepoRoot(t *testing.T) string {
 func catalogResolverFor(t *testing.T, root string) *Resolver {
 	t.Helper()
 	urlToPath := map[string]string{
-		"https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
-		"https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
+		"https://runtimeconditions.io/extensions/rc/common-integrations/v1alpha1/runtimeconditions.extension.yaml": "catalog/rc/common-integrations/common-integrations-v1alpha1.yaml",
+		"https://runtimeconditions.io/extensions/rc/env-configuration/v1alpha1/runtimeconditions.extension.yaml":   "catalog/rc/env-configuration/env-configuration-v1alpha1.yaml",
 		"https://runtimeconditions.io/extensions/aws/s3/0.1.0/runtimeconditions.extension.yaml":                 "catalog/aws/s3/releases/0.1.0/runtimeconditions.extension.yaml",
 	}
 	docs := make(map[string][]byte)
@@ -41,7 +41,7 @@ func catalogResolverFor(t *testing.T, root string) *Resolver {
 func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 	root := extensionsRepoRoot(t)
 	r := catalogResolverFor(t, root)
-	g, err := r.Resolve("https://runtimeconditions.io/extensions/env-configuration:v1alpha1")
+	g, err := r.Resolve("https://runtimeconditions.io/extensions/rc/env-configuration:v1alpha1")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -49,13 +49,13 @@ func TestIntegration_ResolveAndMergeRealExtensions(t *testing.T) {
 	if len(g.Extensions) != 2 {
 		t.Fatalf("expected 2 extensions (env-configuration + common-integrations), got %d", len(g.Extensions))
 	}
-	for _, id := range []string{"https://runtimeconditions.io/extensions/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml"} {
+	for _, id := range []string{"https://runtimeconditions.io/extensions/rc/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/rc/common-integrations/v1alpha1/runtimeconditions.extension.yaml"} {
 		if g.ByID[id] == nil {
 			t.Fatalf("requested reference %q missing from graph", id)
 		}
 	}
-	definition := g.ByID["https://runtimeconditions.io/extensions/env-configuration:v1alpha1"]
-	if definition.Metadata.ID != "https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml" || definition.Metadata.Version != "v1alpha1" {
+	definition := g.ByID["https://runtimeconditions.io/extensions/rc/env-configuration:v1alpha1"]
+	if definition.Metadata.ID != "https://runtimeconditions.io/extensions/rc/env-configuration/v1alpha1/runtimeconditions.extension.yaml" || definition.Metadata.Version != "v1alpha1" {
 		t.Fatal("resolution changed the definition's separate identity or version")
 	}
 

@@ -36,8 +36,8 @@ HTTPS, its hostname is exactly `runtimeconditions.io`, and both the URL and
 version are present. For example:
 
 ```text
-https://runtimeconditions.io/extensions/common-integrations:v1alpha1
-→ https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml
+https://runtimeconditions.io/extensions/rc/common-integrations:v1alpha1
+→ https://runtimeconditions.io/extensions/rc/common-integrations/v1alpha1/runtimeconditions.extension.yaml
 ```
 
 Other references reach the loader unchanged. A custom loader can resolve opaque
@@ -52,7 +52,7 @@ spelling the profile used.
 
 Each resolved definition records the `Location` it was retrieved from. The same
 file can be reached under more than one reference, for example
-`https://runtimeconditions.io/extensions/common-integrations:v1alpha1` from a
+`https://runtimeconditions.io/extensions/rc/common-integrations:v1alpha1` from a
 profile and the full file URL from another extension's `dependencies`. `Merge`
 treats references with the same `Location` as one definition: they do not
 conflict, a schema is bound once, and the kind is not reported as ambiguous.

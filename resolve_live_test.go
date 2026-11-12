@@ -12,8 +12,8 @@ import (
 func TestResolve_LiveOfficialCatalog(t *testing.T) {
 	for _, test := range []struct{ reference, artifact, version string }{
 		{"https://runtimeconditions.io/extensions/aws/s3:0.2.0", "https://runtimeconditions.io/extensions/aws/s3/0.2.0/runtimeconditions.extension.yaml", "0.2.0"},
-		{"https://runtimeconditions.io/extensions/common-integrations:v1alpha1", "https://runtimeconditions.io/extensions/common-integrations/v1alpha1/runtimeconditions.extension.yaml", "v1alpha1"},
-		{"https://runtimeconditions.io/extensions/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/env-configuration/v1alpha1/runtimeconditions.extension.yaml", "v1alpha1"},
+		{"https://runtimeconditions.io/extensions/rc/common-integrations:v1alpha1", "https://runtimeconditions.io/extensions/rc/common-integrations/v1alpha1/runtimeconditions.extension.yaml", "v1alpha1"},
+		{"https://runtimeconditions.io/extensions/rc/env-configuration:v1alpha1", "https://runtimeconditions.io/extensions/rc/env-configuration/v1alpha1/runtimeconditions.extension.yaml", "v1alpha1"},
 	} {
 		t.Run(test.reference, func(t *testing.T) {
 			loader := NewHTTPLoader(10 * time.Second)
